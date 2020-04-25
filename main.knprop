@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+	<icon></icon>
+	<env>wnd</env>
+	<snap>5</snap>
+	<zoom>1</zoom>
+	<related_files />
+	<resources>
+		<resource>game.kn</resource>
+		<resource>learn.kn</resource>
+		<resource>learn2.kn</resource>
+		<resource>learn3.kn</resource>
+		<resource>learn4.kn</resource>
+	</resources>
+</configuration>

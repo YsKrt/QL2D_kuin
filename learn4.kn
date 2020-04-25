@@ -1,0 +1,390 @@
+;モンテカルロ法＋NN
++var state_value: []float
+var E: []float
+var log: list<[]int>
+var mont: [][]float
+const method: int :: 1
++class Learn()
+	var count: int
+	var step: int
+	var nn: @NN
+	*func ctor()
+		do @log :: #list<[]int>
+		do me.nn :: #@NN
+		do @state_value :: #[\game@Xm * \game@Ym]float
+		do @E :: #[\game@Xm * \game@Ym]float
+		do @mont :: #[\game@Xm * \game@Ym, 4]float
+	end func
+	+func init(p: \game@Player, t: \game@Target)
+		do me.update(p, t)
+		do me.count :+ 1
+		do dbg@print("count:\{me.count},step:\{me.step}で終了しました。\n")
+		do me.step :: 0
+	end func
+	
+	
+	+func learn(p: \game@Player, t: \game@Target): int
+		do me.step :+ 1
+		
+		var a: int
+		var Qmax: float :: -inf
+		var Qmax_list: []float :: #[4]float
+		do Qmax_list.fill(-inf)
+		;行動決定
+		;今の場所から次の場所へ移動
+		for i(0, 3)
+			var pos: []int :: me.get_next_pos(p.x, p.y, i)
+			if(me.out(pos[0], pos[1]) <> -1)
+				;次の場所の行動の最大のQ値を求める
+				for i2(0, 3)
+					var pos2: []int :: me.get_next_pos(pos[0], pos[1], i2)
+					if(me.out(pos2[0], pos2[1]) <> -1)
+						var input: []float :: #[\game@Xm * \game@Ym + 4]float
+						;状態の入力
+						do input[pos[0] + pos[1] * \game@Xm] :: 1.0
+						;行動の入力
+						do input[\game@Xm * \game@Ym + i2] :: 1.0
+						var Q: []float :: me.nn.main(input, [0.0], @method, 0)
+						if(Q[0] > Qmax_list[i])
+							do Qmax_list[i] :: Q[0]
+						end if
+					end if
+				end for
+				if(Qmax_list[i] > Qmax)
+					do Qmax :: Qmax_list[i]
+					do a :: i
+				end if
+			end if
+		end for
+		;今の状態からとれる行動の最大のQ値を状態値とする
+		var max: float
+		for i(0, 3)
+			var input: []float :: #[\game@Xm * \game@Ym + 4]float
+			;状態
+			do input[p.x + p.y * \game@Xm] :: 1.0
+			;行動
+			do input[\game@Xm * \game@Ym + i] :: 1.0
+			var Q: []float :: me.nn.main(input, [0.0], @method, 0)
+			if(Q[0] > max | i = 0)
+				do max :: Q[0]
+				do @state_value[p.x + p.y * \game@Xm] :: max
+			end if
+		end for
+		
+		;行動できるところへ10%の確率でランダム行動
+		if(lib@rnd(1, 10) <= 2)
+			var pos: []int
+			while(me.out(pos[0], pos[1]) = -1, skip)
+				do a :: lib@rnd(0, 3)
+				do pos :: me.get_next_pos(p.x, p.y, a)
+			end while
+		end if
+		;状態行動記録
+		do @log.add([p.x, p.y, a])
+		
+		ret a
+	end func
+	
+	+func update(p: \game@Player, t: \game@Target)
+		var Qsum: float
+		var Q: []float :: #[1]float
+		var trace: [][]int :: #[\game@Xm * \game@Ym, 4]int
+		
+		do @log.tail()
+		while(!@log.term())
+			var log: []int :: @log.get()
+			;ゴールから辿ってまだ評価していない状態行動を評価する
+			if(trace[log[0] + log[1] * \game@Xm][log[2]] <> 1)
+				var input: []float :: #[\game@Xm * \game@Ym + 4]float
+				;状態
+				do input[log[0] + log[1] * \game@Xm] :: 1.0
+				;行動
+				do input[\game@Ym * \game@Xm + log[2]] :: 1.0
+				;報酬
+				var r: float :: me.get_reward(log, t)
+				;累積Q値の時間割引
+				do Qsum :* 0.8
+				;更新前のQ値を入手
+				do Q :: me.nn.main(input, [0.0], @method, 0)
+				;Q値更新(NNから得た値から更新)	
+				do Q[0] :+ 0.2 * (r + Qsum - Q[0])
+				do Qsum :+ r
+				;更新したQ値でNNの重み更新
+				var out: []float :: me.nn.main(input, Q, @method, 1)
+				;更新した重みから得た出力値を入手
+				do out :: me.nn.main(input, [0.0], @method, 0)
+				do @mont[log[0] + log[1] * \game@Xm][log[2]] :: out[0]
+				do @E[log[0] + log[1] * \game@Xm] :: me.nn.MSE(out, [@mont[log[0] + log[1] * \game@Xm][log[2]]])
+			end if
+			;辿ったしるしを残す
+			do trace[log[0] + log[1] * \game@Xm][log[2]] :: 1
+			
+			do @log.prev()
+		end while
+		;一回のゲームで記録した状態行動を削除
+		do @log.head()
+		while(!@log.term())
+			do @log.del()
+		end while
+		
+		
+	end func
+	
+	+func out(x: int, y: int): int
+		if(x > \game@Xm - 1 | x < 0 | y > \game@Ym - 1 | y < 0)
+			ret - 1
+		end if
+		ret 0
+	end func
+	
+	+func draw(x: int, y: int, width: float, height: float, font: draw@Font)
+		do font.draw(x $ float * width + width / 2.0 + width / 8.0 * 3.0, y $ float * height + height / 2.0, "\{@mont[x + y * \game@Ym][0]}", 0xFF000000)
+		do font.draw(x $ float * width + width / 2.0 - width / 8.0 * 3.0, y $ float * height + height / 2.0, "\{@mont[x + y * \game@Ym][1]}", 0xFF000000)
+		do font.draw(x $ float * width + width / 2.0, y $ float * height + height / 2.0 - height / 8.0 * 3.0, "\{@mont[x + y * \game@Ym][2]}", 0xFF000000)
+		do font.draw(x $ float * width + width / 2.0, y $ float * height + height / 2.0 + height / 8.0 * 3.0, "\{@mont[x + y * \game@Ym][3]}", 0xFF000000)
+		
+		do font.draw(x $ float * width + width / 2.0, y $ float * height + height / 2.0, "Q:\{@state_value[x + y * \game@Ym]}", 0xFF000000)
+		;do font.draw(x $ float * width + width / 2.0, y $ float * height + height /  2.0, "E:\{@E[x + y * \game@Ym]}", 0xFF000000)
+		
+	end func
+	
+	+func get_reward(log: []int, t: \game@Target): float
+		if(log[0] = t.x & log[1] = t.y)
+			ret 10.0
+		end if
+		ret 0.0
+	end func
+	+func get_next_pos(x: int, y: int, a: int): []int
+		switch(a)
+		case 0
+			do x :+ 1
+		case 1
+			do x :- 1
+		case 2
+			do y :- 1
+		case 3
+			do y :+ 1
+		end switch
+		ret[x, y]
+	end func
+	
+end class
+
++class NN()
+	const input_size: int :: \game@Xm * \game@Ym
+	const hidden_size: int :: 100
+	const output_size: int :: 1
+	const eta: float :: 0.01
+	+var train: int
+	const b: float :: 0.0
+	;nn()のflag
+	;0 sigmoid
+	;1 ReLU
+	;2 tanh
+	;3 step
+	
+	
+	var x_list: list<float>
+	var y_list: list<float>
+	var t_list: list<float>
+	
+	var input: []float
+	var hidden: []float
+	+var output: []float
+	var weight_ih: [][]float
+	var weight_ho: [][]float
+	
+	var teacher: []float
+	
+	*func ctor()
+		do me.x_list :: #list<float>
+		do me.y_list :: #list<float>
+		do me.t_list :: #list<float>
+		;入力層と隠れ層の[0]には1
+		;重みの[0]にはバイアスを用意する
+		do me.input :: #[input_size + 1]float
+		do me.hidden :: #[hidden_size + 1]float
+		do me.output :: #[output_size]float
+		do me.teacher :: #[output_size]float
+		do me.weight_ih :: #[input_size + 1, hidden_size + 1]float
+		do me.weight_ho :: #[hidden_size + 1, output_size]float
+		;1の出力
+		do me.input[0] :: 1.0
+		do me.hidden[0] :: 1.0
+		;バイアスの代入
+		for h(1, hidden_size)
+			do me.weight_ih[0][h] :: b
+		end for
+		for o(0, output_size - 1)
+			do me.weight_ho[0][o] :: b
+		end for
+		;重みの初期化
+		;全て同じ値を使うと更新してもすべて同じ値になってしまい意味がなくなる！！！
+		for i(1, input_size)
+			for h(1, hidden_size)
+				do me.weight_ih[i][h] :: lib@rndFloat(-10.0, 10.0)
+				for o(0, output_size - 1)
+					do me.weight_ho[h][o] :: lib@rndFloat(-10.0, 10.0)
+				end for
+			end for
+		end for
+		
+	end func
+	
+	
+	+func main(input: []float, teacher: []float, flag: int, trainF: int): []float
+		;入力
+		for i(1, input_size)
+			do me.input[i] :: input[i - 1]
+		end for
+		;教師
+		for o(0, output_size - 1)
+			do me.teacher[o] :: teacher[o]
+		end for
+		;入力層から隠れ層へ
+		for h(1, hidden_size)
+			var hid: float :: 0.0
+			for i(0, input_size)
+				do hid :+ me.input[i] * me.weight_ih[i][h]
+			end for
+			switch(flag)
+			case 0
+				do me.hidden[h] :: me.sigmoid(hid)
+			case 1
+				do me.hidden[h] :: me.ReLU(hid)
+			case 2
+				do me.hidden[h] :: me.tanh(hid)
+			case 3
+				do me.hidden[h] :: me.step(hid)
+			end switch
+		end for
+		;隠れ層から出力層へ
+		for o(0, output_size - 1)
+			var out: float :: 0.0
+			for h(0, hidden_size)
+				do out :+ me.hidden[h] * me.weight_ho[h][o]
+			end for
+			do me.output[o] :: out
+		end for
+		;重みの更新
+		if(trainF = 1)
+			do me.update_w(flag)
+		end if
+		
+		ret me.output
+	end func
+	
+	+func update_w(flag: int)
+		;二乗誤差の勾配(の一部)
+		var dE: float
+		do dE :: me.d_MSE(me.output, me.teacher)
+		const clip: float :: 1.0e+3
+		if(dE > clip)
+			do dE :: clip
+		elif(dE < -clip)
+			do dE :: -clip
+		end if
+		;;;;;;↑↑クリッピング↑
+		for o(0, output_size - 1)
+			for h(0, hidden_size)
+				;出力層と隠れ層の間の重みとバイアスの更新
+				var dw_ho: float :: -eta * dE * me.hidden[h]
+				do me.weight_ho[h][o] :+ dw_ho
+				for i(0, input_size)
+					;隠れ層と入力層の間の重みとバイアスの更新
+					var dw_ih: float
+					switch(flag)
+					case 0
+						;sigmoid
+						do dw_ih :: -eta * dE * me.weight_ho[h][o] * (me.input[i] * me.d_sigmoid(me.hidden[h]))
+					case 1
+						;ReLU
+						do dw_ih :: me.hidden[h] > 0.0 ?(-eta * dE * me.weight_ho[h][o] * me.input[i], 0.0)
+					case 2
+						;tanh
+						do dw_ih :: -eta * dE * me.weight_ho[h][o] * (me.input[i] * me.d_tanh(me.hidden[h]))
+					case 3
+						;step
+						do dw_ih :: me.hidden[h] > 0.0 ?(-eta * dE * me.weight_ho[h][o] * me.input[i], 0.0)
+					end switch
+					
+					do me.weight_ih[i][h] :+ dw_ih
+				end for
+			end for
+		end for
+	end func
+	
+	+func MSE(out: []float, tea: []float): float
+		var sum: float
+		for o(0, output_size - 1)
+			do sum :+ (out[o] - tea[o]) ^ 2.0
+		end for
+		ret sum / output_size $ float
+	end func
+	
+	+func d_MSE(out: []float, tea: []float): float
+		var sum: float
+		for o(0, output_size - 1)
+			do sum :+ (out[o] - tea[o])
+		end for
+		ret sum / (output_size * hidden_size) $ float
+	end func
+	
+	+func tanh(x: float): float
+		ret lib@tanh(x)
+	end func
+	+func d_tanh(f: float): float
+		ret 1.0 - f ^ 2.0
+	end func
+	
+	+func step(x: float): float
+		ret x > 0.0 ?(1.0, 0.0)
+	end func
+	
+	+func ReLU(x: float): float
+		ret x > 0.0 ?(x / 1.0, 0.0)
+	end func
+	
+	+func sigmoid(x: float): float
+		ret 1.0 / (1.0 + lib@e ^ -(x / 1.0))
+	end func
+	
+	+func d_sigmoid(f: float): float
+		ret f * (1.0 - f)
+	end func
+	
+	+func show()
+		;入力
+		for i(0, input_size)
+			do dbg@print("in[\{i}]:\{me.input[i]}\n")
+		end for
+		;重み_ih
+		for i(0, input_size)
+			for h(0, hidden_size)
+				do dbg@print("w_ih[\{i}][\{h}]:\{me.weight_ih[i][h]}\n")
+			end for
+		end for
+		;隠れ
+		for h(0, hidden_size)
+			do dbg@print("hid[\{h}]:\{me.hidden[h]}\n")
+		end for
+		;重み_ho
+		for h(0, hidden_size)
+			for o(0, input_size - 1)
+				do dbg@print("w_ho[\{h}][\{o}]:\{me.weight_ho[h][o]}\n")
+			end for
+		end for
+		;出力
+		for o(0, output_size - 1)
+			do dbg@print("out[\{o}]:\{me.output[o]}\n")
+		end for
+		;教師
+		for o(0, output_size - 1)
+			do dbg@print("t[\{o}]:\{me.teacher[o]}\n")
+		end for
+		;誤差関数
+		var error: float :: me.MSE(me.output, me.teacher)
+		do dbg@print("err:\{error}\n")
+	end func
+	
+end class
